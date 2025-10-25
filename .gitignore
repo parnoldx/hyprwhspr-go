@@ -1,0 +1,31 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build
+*.test
+*.out
+vendor/
+
+# whisper.cpp (cloned during build)
+whisper.cpp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (user-specific)
+config.json
+
+# Logs
+*.log

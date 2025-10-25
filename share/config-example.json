@@ -1,0 +1,16 @@
+{
+  "model": "base",
+  "threads": 4,
+  "language": null,
+  "allowed_languages": ["de", "en"],
+  "audio_device": null,
+  "audio_feedback": false,
+  "start_sound_volume": 0.4,
+  "stop_sound_volume": 0.4,
+  "command_mode": false,
+  "commands": {
+    "note": "~/.local/share/hyprwhspr/scripts/note.sh",
+    "workspace": "~/.local/share/hyprwhspr/scripts/workspace.sh"
+  },
+  "whisper_prompt": "Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard capitalization rules."
+}
