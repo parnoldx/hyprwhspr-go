@@ -91,6 +91,10 @@ func (inj *Injector) getCurrentClipboard() (string, error) {
 	cmd := exec.Command("wl-paste")
 	output, err := cmd.Output()
 	if err != nil {
+		// wl-paste returns exit status 1 when clipboard is empty, which is normal
+		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
+			return "", nil
+		}
 		return "", err
 	}
 	return string(output), nil
