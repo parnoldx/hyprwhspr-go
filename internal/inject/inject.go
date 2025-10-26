@@ -9,15 +9,13 @@ import (
 
 // Injector handles text injection into focused applications
 type Injector struct {
-	wtypeAvailable   bool
-	ydotoolAvailable bool
+	wlClipboardAvailable bool // wl-copy/wl-paste availability
 }
 
 // New creates a new text injector
 func New() *Injector {
 	return &Injector{
-		wtypeAvailable:   checkCommand("wtype"),
-		ydotoolAvailable: checkCommand("ydotool"),
+		wlClipboardAvailable: checkCommand("wl-copy") && checkCommand("wl-paste") && checkCommand("wtype"),
 	}
 }
 
@@ -29,66 +27,73 @@ func checkCommand(name string) bool {
 
 // Inject injects text into the focused application
 func (inj *Injector) Inject(text string) error {
-	// Priority 1: wtype (no clipboard pollution)
-	if inj.wtypeAvailable {
-		return inj.injectViaWtype(text)
+	// Smart clipboard with wtype (reliable with all layouts, keeps clipboard clean)
+	if inj.wlClipboardAvailable {
+		return inj.injectViaSmartClipboardWtype(text)
 	}
 
-	// Priority 2: ydotool (with clipboard)
-	if inj.ydotoolAvailable {
-		if err := inj.injectViaYdotool(text); err != nil {
-			return err
-		}
-		// Clear clipboard after 2 seconds
-		go func() {
-			time.Sleep(2 * time.Second)
-			exec.Command("wl-copy", "").Run()
-		}()
-		return nil
-	}
-
-	// Priority 3: clipboard only (fallback)
+	// Fallback: clipboard only (manual paste needed)
 	return inj.copyToClipboard(text)
 }
 
-// injectViaWtype injects text using wtype (Wayland-native, no clipboard)
-func (inj *Injector) injectViaWtype(text string) error {
-	fmt.Printf("💡 Injecting text with wtype (no clipboard): %d chars\n", len(text))
+// injectViaSmartClipboardWtype injects text using smart clipboard with wtype for paste
+func (inj *Injector) injectViaSmartClipboardWtype(text string) error {
+	fmt.Printf("📋 Injecting text via smart clipboard (wtype): %d chars\n", len(text))
 
-	// Small delay for window focus
-	time.Sleep(50 * time.Millisecond)
-
-	cmd := exec.Command("wtype", "-")
-	cmd.Stdin = bytes.NewBufferString(text)
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("wtype failed: %w", err)
+	// Save current clipboard content
+	oldClipboard, err := inj.getCurrentClipboard()
+	if err != nil {
+		fmt.Printf("[WARN] Failed to save current clipboard: %v\n", err)
+		oldClipboard = ""
 	}
 
-	fmt.Println("✅ Text injected successfully (wtype)")
-	return nil
-}
-
-// injectViaYdotool injects text using ydotool with clipboard
-func (inj *Injector) injectViaYdotool(text string) error {
-	fmt.Printf("📋 Injecting text via clipboard+ydotool: %d chars\n", len(text))
-
-	// Copy to clipboard
+	// Copy new text to clipboard
 	if err := inj.copyToClipboard(text); err != nil {
-		return err
+		return fmt.Errorf("failed to copy text to clipboard: %w", err)
 	}
 
 	// Wait for clipboard to settle
 	time.Sleep(120 * time.Millisecond)
 
-	// Simulate Ctrl+Shift+V
-	cmd := exec.Command("ydotool", "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ydotool failed: %w", err)
+	// Paste with wtype using Ctrl+Shift+V (safer, doesn't conflict with system bindings)
+	pasteCmd := exec.Command("wtype", "-M", "ctrl", "-M", "shift", "v", "-m", "ctrl", "-m", "shift")
+	if err := pasteCmd.Run(); err != nil {
+		return fmt.Errorf("wtype paste failed: %w", err)
 	}
 
-	fmt.Println("✅ Text injected successfully (ydotool+clipboard)")
+	// Schedule clipboard restoration in background
+	go func() {
+		time.Sleep(500 * time.Millisecond) // Wait 0.5 seconds for paste to complete
+
+		if oldClipboard != "" {
+			if err := inj.copyToClipboard(oldClipboard); err != nil {
+				fmt.Printf("[WARN] Failed to restore clipboard: %v\n", err)
+			} else {
+				fmt.Println("📋 Clipboard restored")
+			}
+		} else {
+			// Clear clipboard if it was empty before
+			clearCmd := exec.Command("wl-copy", "")
+			if err := clearCmd.Run(); err != nil {
+				fmt.Printf("[WARN] Failed to clear clipboard: %v\n", err)
+			} else {
+				fmt.Println("📋 Clipboard cleared")
+			}
+		}
+	}()
+
+	fmt.Println("✅ Text injected successfully (smart clipboard)")
 	return nil
+}
+
+// getCurrentClipboard retrieves current clipboard content
+func (inj *Injector) getCurrentClipboard() (string, error) {
+	cmd := exec.Command("wl-paste")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
 }
 
 // copyToClipboard copies text to clipboard
@@ -106,10 +111,8 @@ func (inj *Injector) copyToClipboard(text string) error {
 
 // GetStatus returns the current injection method
 func (inj *Injector) GetStatus() string {
-	if inj.wtypeAvailable {
-		return "✅ Text injection: wtype (Wayland-native, no clipboard)"
-	} else if inj.ydotoolAvailable {
-		return "⚠️  Text injection: ydotool (uses clipboard)"
+	if inj.wlClipboardAvailable {
+		return "✅ Text injection: Smart clipboard (wl-copy/wl-paste + wtype, keeps clipboard clean)"
 	} else {
 		return "⚠️  Text injection: clipboard only (manual paste needed)"
 	}
