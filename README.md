@@ -12,6 +12,8 @@ Single binary, fast, simple
 - **wtype integration** - Direct text injection, no clipboard pollution
 - **Command mode** - Trigger custom scripts with voice commands
 - **Fast & efficient** - ~20-30MB memory, ~100ms startup
+- **Speaker-aware transcription** - Uses Acoustic Echo Cancellation (AEC) and Voice Activity Detection (VAD) to transcribe your speech even while audio plays from speakers
+- **Smart clipboard handling** - Seamless text injection with fallback support
 
 ## Quick Start
 
