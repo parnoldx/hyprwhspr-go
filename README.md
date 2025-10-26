@@ -9,7 +9,6 @@ Single binary, fast, simple
 - **Single binary** - One command for everything (daemon + control)
 - **CUDA acceleration** - Automatically uses GPU when available for faster transcription
 - **Language auto-detection** - Speak any language, Whisper detects it automatically
-- **wtype integration** - Direct text injection, no clipboard pollution
 - **Command mode** - Trigger custom scripts with voice commands
 - **Fast & efficient** - ~20-30MB memory, ~100ms startup
 - **Speaker-aware transcription** - Uses Acoustic Echo Cancellation (AEC) and Voice Activity Detection (VAD) to transcribe your speech even while audio plays from speakers
@@ -40,7 +39,9 @@ cd ~/.local/share/hyprwhspr
 wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
 ```
 
-Available models: `tiny`, `base`, `small`, `medium`, `large`
+Available models: `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large-v1`, `large-v2`, `large-v3`, `large`
+
+Models ending with `.en` are English-only and slightly faster.
 
 ### 3. Test
 
@@ -88,6 +89,13 @@ hyprwhspr stop       # Stop recording
 hyprwhspr toggle     # Toggle on/off
 hyprwhspr status     # Check status
 
+# Model management
+hyprwhspr models           # List available and downloaded models
+hyprwhspr model            # Show current model
+hyprwhspr model modelname  # Switch to certain mdeo
+hyprwhspr download base    # Download base model
+hyprwhspr delete tiny      # Delete downloaded tiny model
+
 # Other
 hyprwhspr help       # Show help
 hyprwhspr version    # Show version
@@ -99,7 +107,7 @@ hyprwhspr version    # Show version
 2. Speak in any language (English, German, etc.)
 3. Press `SUPER+D` again to stop
 4. Whisper auto-detects language and transcribes
-5. Text is injected instantly (no clipboard pollution with wtype!)
+5. Text is injected
 
 ## Configuration
 
@@ -118,7 +126,7 @@ Config file: `~/.config/hyprwhspr/config.json`
 
 ### Configuration Options
 
-- **model** - Whisper model to use (`tiny`, `base`, `small`, `medium`, `large`)
+- **model** - Whisper model to use (`tiny`, `base`, `small`, `medium`, `large`, etc.)
 - **threads** - Number of CPU threads for transcription
 - **language** - Force specific language (e.g., `"en"`, `"de"`), or `null` for auto-detection
 - **command_mode** - Enable voice command mode (see below)
