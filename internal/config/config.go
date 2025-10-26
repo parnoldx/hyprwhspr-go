@@ -10,7 +10,7 @@ import (
 type Config struct {
 	Model            string            `json:"model"`
 	Threads          int               `json:"threads"`
-	Language         *string           `json:"language"`         // nil = auto-detect
+	Language         *string           `json:"language"`          // nil = auto-detect
 	AllowedLanguages []string          `json:"allowed_languages"` // Restrict auto-detect to these languages (e.g. ["de", "en"])
 	AudioDevice      *string           `json:"audio_device"`
 	SampleRate       int               `json:"sample_rate"`
@@ -24,6 +24,17 @@ type Config struct {
 	CommandMode      bool              `json:"command_mode"`     // Enable command mode
 	Commands         map[string]string `json:"commands"`         // command_word -> script_path
 	WhisperPrompt    string            `json:"whisper_prompt"`   // Initial prompt for whisper transcription
+
+	// Echo Cancellation settings
+	EchoCancellation   bool    `json:"echo_cancellation"`    // Enable acoustic echo cancellation
+	AECFilterLength    int     `json:"aec_filter_length"`    // AEC filter length (512-2048)
+	AECStepSize        float64 `json:"aec_step_size"`        // AEC adaptation step size (0.01-0.1)
+	AECEchoSuppression float64 `json:"aec_echo_suppression"` // Echo suppression gain (0.0-1.0)
+
+	// Voice Activity Detection settings
+	VoiceActivityDetection bool    `json:"voice_activity_detection"` // Enable VAD
+	VADEnergyThreshold     float64 `json:"vad_energy_threshold"`     // Energy threshold for VAD
+	VADVoiceThreshold      float64 `json:"vad_voice_threshold"`      // Voice probability threshold
 }
 
 // Default returns default configuration
@@ -35,20 +46,31 @@ func Default() *Config {
 	return &Config{
 		Model:            "base",
 		Threads:          4,
-		Language:         nil,           // auto-detect
-		AllowedLanguages: []string{},    // empty = all languages allowed
-		AudioDevice:      nil,           // default device
+		Language:         nil,        // auto-detect
+		AllowedLanguages: []string{}, // empty = all languages allowed
+		AudioDevice:      nil,        // default device
 		SampleRate:       16000,
 		SocketPath:       socketPath,
 		WhisperModelDir:  modelDir,
-		AudioFeedback:    true,  // Enable audio feedback by default
-		StartSoundVolume: 0.4,   // 40% volume for start sound
-		StopSoundVolume:  0.4,   // 40% volume for stop sound
-		StartSoundPath:   nil,   // Use default
-		StopSoundPath:    nil,   // Use default
-		CommandMode:      false, // Disabled by default
+		AudioFeedback:    true,                    // Enable audio feedback by default
+		StartSoundVolume: 0.4,                     // 40% volume for start sound
+		StopSoundVolume:  0.4,                     // 40% volume for stop sound
+		StartSoundPath:   nil,                     // Use default
+		StopSoundPath:    nil,                     // Use default
+		CommandMode:      false,                   // Disabled by default
 		Commands:         make(map[string]string), // Empty by default
 		WhisperPrompt:    "Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.",
+
+		// Echo Cancellation defaults
+		EchoCancellation:   true, // Enable AEC by default
+		AECFilterLength:    1024, // Default filter length
+		AECStepSize:        0.05, // Default step size
+		AECEchoSuppression: 0.7,  // Default echo suppression
+
+		// VAD defaults
+		VoiceActivityDetection: true, // Enable VAD by default
+		VADEnergyThreshold:     0.01, // Default energy threshold
+		VADVoiceThreshold:      0.5,  // Default voice probability threshold
 	}
 }
 

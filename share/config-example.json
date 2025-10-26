@@ -12,5 +12,12 @@
     "note": "~/.local/share/hyprwhspr/scripts/note.sh",
     "workspace": "~/.local/share/hyprwhspr/scripts/workspace.sh"
   },
-  "whisper_prompt": "Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard capitalization rules."
+  "whisper_prompt": "Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard capitalization rules.",
+  "echo_cancellation": true,
+  "aec_filter_length": 1024,
+  "aec_step_size": 0.05,
+  "aec_echo_suppression": 0.7,
+  "voice_activity_detection": true,
+  "vad_energy_threshold": 0.01,
+  "vad_voice_threshold": 0.5
 }

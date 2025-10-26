@@ -23,6 +23,9 @@ type App struct {
 	cfg         *config.Config
 	ipcServer   *ipc.Server
 	recorder    *audio.Recorder
+	loopbackRec *audio.LoopbackRecorder
+	aecProc     *audio.AECProcessor
+	vadProc     *audio.VADProcessor
 	transcriber *whisper.Transcriber
 	injector    *inject.Injector
 	player      *audio.Player
@@ -279,6 +282,70 @@ func (app *App) initialize() error {
 		return fmt.Errorf("failed to initialize audio recorder: %w", err)
 	}
 
+	// Initialize AEC and VAD if enabled
+	if app.cfg.EchoCancellation {
+		app.loopbackRec, err = audio.NewLoopbackRecorder(app.cfg.SampleRate)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to initialize loopback recorder: %v\n", err)
+		} else {
+			aecConfig := audio.AECConfig{
+				FilterLength:    app.cfg.AECFilterLength,
+				StepSize:        app.cfg.AECStepSize,
+				LeakageFactor:   0.999,
+				EchoSuppression: app.cfg.AECEchoSuppression,
+			}
+			app.aecProc = audio.NewAECProcessor(aecConfig)
+			fmt.Println("✅ Echo cancellation enabled")
+		}
+	}
+
+	if app.cfg.VoiceActivityDetection {
+		vadConfig := audio.VADConfig{
+			FrameSize:       512,
+			Overlap:         256,
+			EnergyThreshold: app.cfg.VADEnergyThreshold,
+			ZcrThreshold:    0.1,
+			VoiceThreshold:  app.cfg.VADVoiceThreshold,
+		}
+		app.vadProc = audio.NewVADProcessor(vadConfig)
+		fmt.Println("✅ Voice activity detection enabled")
+	}
+
+	// Initialize AEC and VAD if enabled
+	fmt.Printf("🔧 Initializing AEC/VAD - EchoCancellation: %v, VAD: %v\n", app.cfg.EchoCancellation, app.cfg.VoiceActivityDetection)
+
+	if app.cfg.EchoCancellation {
+		fmt.Println("🔧 Creating loopback recorder...")
+		app.loopbackRec, err = audio.NewLoopbackRecorder(app.cfg.SampleRate)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize loopback recorder: %v\n", err)
+			fmt.Println("❌ Echo cancellation disabled")
+		} else {
+			fmt.Println("✅ Loopback recorder created")
+			aecConfig := audio.AECConfig{
+				FilterLength:    app.cfg.AECFilterLength,
+				StepSize:        app.cfg.AECStepSize,
+				LeakageFactor:   0.999,
+				EchoSuppression: app.cfg.AECEchoSuppression,
+			}
+			app.aecProc = audio.NewAECProcessor(aecConfig)
+			fmt.Println("✅ Echo cancellation enabled")
+		}
+	}
+
+	if app.cfg.VoiceActivityDetection {
+		fmt.Println("🔧 Creating VAD processor...")
+		vadConfig := audio.VADConfig{
+			FrameSize:       512,
+			Overlap:         256,
+			EnergyThreshold: app.cfg.VADEnergyThreshold,
+			ZcrThreshold:    0.1,
+			VoiceThreshold:  app.cfg.VADVoiceThreshold,
+		}
+		app.vadProc = audio.NewVADProcessor(vadConfig)
+		fmt.Println("✅ Voice activity detection enabled")
+	}
+
 	// Initialize audio player for notifications
 	app.player, err = audio.NewPlayer(audio.PlayerConfig{
 		AudioFeedback:    app.cfg.AudioFeedback,
@@ -377,7 +444,20 @@ func (app *App) handleCommand(command string) string {
 }
 
 func (app *App) startRecording() error {
+	if app.isRecording {
+		return fmt.Errorf("already recording")
+	}
+
 	app.isRecording = true
+
+	// Start loopback recording if AEC is enabled
+	if app.loopbackRec != nil {
+		if err := app.loopbackRec.Start(); err != nil {
+			fmt.Printf("⚠️  Failed to start loopback recording: %v\n", err)
+			app.loopbackRec = nil
+			app.aecProc = nil
+		}
+	}
 
 	// Play start sound
 	if app.player != nil {
@@ -407,20 +487,53 @@ func (app *App) stopRecording() error {
 		return err
 	}
 
+	// Get loopback audio if available
+	var loopbackSamples []float32
+	if app.loopbackRec != nil {
+		loopbackSamples, err = app.loopbackRec.Stop()
+		if err != nil {
+			fmt.Printf("⚠️  Failed to stop loopback recording: %v\n", err)
+		}
+	}
+
 	// Process audio in background
-	go app.processAudio(samples)
+	go app.processAudio(samples, loopbackSamples)
 
 	return nil
 }
 
-func (app *App) processAudio(samples []float32) {
+func (app *App) processAudio(samples []float32, loopbackSamples []float32) {
 	app.isProcessing = true
 	defer func() {
 		app.isProcessing = false
 	}()
 
+	// Apply AEC if available
+	processedSamples := samples
+	if app.aecProc != nil && len(loopbackSamples) > 0 {
+		// Ensure both samples have same length
+		minLen := len(samples)
+		if len(loopbackSamples) < minLen {
+			minLen = len(loopbackSamples)
+		}
+
+		if minLen > 0 {
+			micSamples := samples[:minLen]
+			farEndSamples := loopbackSamples[:minLen]
+			processedSamples = app.aecProc.ProcessFrame(micSamples, farEndSamples)
+		}
+	}
+
+	// Apply VAD if available
+	if app.vadProc != nil {
+		voiceSegments := app.vadProc.GetVoiceSegments(processedSamples)
+		if len(voiceSegments) == 0 {
+			return
+		}
+	}
+
 	// Transcribe
-	text, err := app.transcriber.Transcribe(samples)
+	text, err := app.transcriber.Transcribe(processedSamples)
 	if err != nil {
 		fmt.Printf("❌ Transcription failed: %v\n", err)
 		return
@@ -488,6 +601,9 @@ func (app *App) cleanup() {
 	}
 	if app.recorder != nil {
 		app.recorder.Close()
+	}
+	if app.loopbackRec != nil {
+		app.loopbackRec.Close()
 	}
 	if app.player != nil {
 		app.player.Close()

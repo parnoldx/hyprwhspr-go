@@ -22,6 +22,18 @@ type Recorder struct {
 	samples   []float32
 }
 
+// LoopbackRecorder captures system audio for echo cancellation
+type LoopbackRecorder struct {
+	ctx        *malgo.AllocatedContext
+	device     *malgo.Device
+	sampleRate uint32
+	channels   uint32
+
+	mu        sync.Mutex
+	recording bool
+	samples   []float32
+}
+
 // NewRecorder creates a new audio recorder
 // deviceName: optional device name filter (e.g. "Mic1", "default", or nil for default)
 func NewRecorder(sampleRate int, deviceName *string) (*Recorder, error) {
@@ -38,6 +50,21 @@ func NewRecorder(sampleRate int, deviceName *string) (*Recorder, error) {
 	return &Recorder{
 		ctx:        ctx,
 		deviceName: deviceName,
+		sampleRate: uint32(sampleRate),
+		channels:   1, // mono
+		samples:    make([]float32, 0),
+	}, nil
+}
+
+// NewLoopbackRecorder creates a system audio loopback recorder
+func NewLoopbackRecorder(sampleRate int) (*LoopbackRecorder, error) {
+	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize audio context: %w", err)
+	}
+
+	return &LoopbackRecorder{
+		ctx:        ctx,
 		sampleRate: uint32(sampleRate),
 		channels:   1, // mono
 		samples:    make([]float32, 0),
@@ -156,6 +183,83 @@ func (r *Recorder) Start() error {
 	return nil
 }
 
+// Start starts capturing system audio
+func (lr *LoopbackRecorder) Start() error {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+
+	if lr.recording {
+		return fmt.Errorf("already recording")
+	}
+
+	lr.samples = make([]float32, 0, lr.sampleRate*10)
+
+	deviceConfig := malgo.DefaultDeviceConfig(malgo.Capture)
+	deviceConfig.Capture.Format = malgo.FormatF32
+	deviceConfig.Capture.Channels = lr.channels
+	deviceConfig.SampleRate = lr.sampleRate
+	deviceConfig.Alsa.NoMMap = 1
+
+	// Find speaker monitor device
+	devices, err := lr.ctx.Devices(malgo.Capture)
+	if err != nil {
+		return fmt.Errorf("failed to list devices: %w", err)
+	}
+
+	var speakerMonitorDevice *malgo.DeviceInfo
+	for _, dev := range devices {
+		devNameLower := strings.ToLower(dev.Name())
+		if strings.Contains(devNameLower, "speaker") && strings.Contains(devNameLower, "monitor") {
+			speakerMonitorDevice = &dev
+			break
+		}
+	}
+
+	if speakerMonitorDevice != nil {
+		deviceConfig.Capture.DeviceID = speakerMonitorDevice.ID.Pointer()
+	} else {
+		return fmt.Errorf("no speaker monitor device found")
+	}
+
+	onRecvFrames := func(pSample2, pSample []byte, framecount uint32) {
+		lr.mu.Lock()
+		defer lr.mu.Unlock()
+
+		if !lr.recording {
+			return
+		}
+
+		samples := make([]float32, framecount)
+		for i := uint32(0); i < framecount; i++ {
+			idx := i * 4
+			if idx+3 < uint32(len(pSample)) {
+				bits := uint32(pSample[idx]) |
+					uint32(pSample[idx+1])<<8 |
+					uint32(pSample[idx+2])<<16 |
+					uint32(pSample[idx+3])<<24
+				samples[i] = *(*float32)(unsafe.Pointer(&bits))
+			}
+		}
+
+		lr.samples = append(lr.samples, samples...)
+	}
+
+	var initErr error
+	lr.device, initErr = malgo.InitDevice(lr.ctx.Context, deviceConfig, malgo.DeviceCallbacks{
+		Data: onRecvFrames,
+	})
+	if initErr != nil {
+		return fmt.Errorf("failed to initialize loopback device: %w", initErr)
+	}
+
+	if startErr := lr.device.Start(); startErr != nil {
+		return fmt.Errorf("failed to start loopback device: %w", startErr)
+	}
+
+	lr.recording = true
+	return nil
+}
+
 // Stop stops recording and returns the captured audio
 func (r *Recorder) Stop() ([]float32, error) {
 	r.mu.Lock()
@@ -175,6 +279,26 @@ func (r *Recorder) Stop() ([]float32, error) {
 
 	fmt.Printf("🛑 Recording stopped (%d samples)\n", len(r.samples))
 	return r.samples, nil
+}
+
+// Stop stops loopback recording
+func (lr *LoopbackRecorder) Stop() ([]float32, error) {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+
+	if !lr.recording {
+		return nil, fmt.Errorf("not recording")
+	}
+
+	lr.recording = false
+
+	if lr.device != nil {
+		lr.device.Stop()
+		lr.device.Uninit()
+		lr.device = nil
+	}
+
+	return lr.samples, nil
 }
 
 // IsRecording returns true if currently recording
@@ -198,6 +322,23 @@ func (r *Recorder) Close() {
 		_ = r.ctx.Uninit()
 		r.ctx.Free()
 		r.ctx = nil
+	}
+}
+
+// Close closes the loopback recorder
+func (lr *LoopbackRecorder) Close() {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+
+	if lr.device != nil {
+		lr.device.Uninit()
+		lr.device = nil
+	}
+
+	if lr.ctx != nil {
+		_ = lr.ctx.Uninit()
+		lr.ctx.Free()
+		lr.ctx = nil
 	}
 }
 
