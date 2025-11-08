@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // Config represents the application configuration
@@ -119,4 +123,117 @@ func (c *Config) Save(configPath string) error {
 func GetConfigPath() string {
 	homeDir, _ := os.UserHomeDir()
 	return filepath.Join(homeDir, ".config", "hyprwhspr", "config.json")
+}
+
+// Watcher watches for config file changes
+type Watcher struct {
+	configPath string
+	watcher    *fsnotify.Watcher
+	callback   func(*Config)
+	mu         sync.RWMutex
+	running    bool
+	stopChan   chan struct{}
+}
+
+// NewWatcher creates a new config watcher
+func NewWatcher(configPath string, callback func(*Config)) (*Watcher, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Watcher{
+		configPath: configPath,
+		watcher:    watcher,
+		callback:   callback,
+		stopChan:   make(chan struct{}),
+	}, nil
+}
+
+// Start starts watching the config file
+func (w *Watcher) Start() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.running {
+		return nil
+	}
+
+	// Watch the config file
+	if err := w.watcher.Add(w.configPath); err != nil {
+		return err
+	}
+
+	// Also watch the directory to handle file creation/deletion
+	dir := filepath.Dir(w.configPath)
+	if err := w.watcher.Add(dir); err != nil {
+		return err
+	}
+
+	w.running = true
+	go w.watchLoop()
+
+	return nil
+}
+
+// Stop stops watching the config file
+func (w *Watcher) Stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.running {
+		return
+	}
+
+	close(w.stopChan)
+	w.watcher.Close()
+	w.running = false
+}
+
+// watchLoop is the main watching loop
+func (w *Watcher) watchLoop() {
+	for {
+		select {
+		case event, ok := <-w.watcher.Events:
+			if !ok {
+				return
+			}
+
+			// Only handle write events on our config file
+			if event.Name == w.configPath && (event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create) {
+				w.reloadConfig()
+			}
+
+		case err, ok := <-w.watcher.Errors:
+			if !ok {
+				return
+			}
+			// Log error but continue watching
+			if err != nil {
+				// In a real application, you might want to log this
+				continue
+			}
+
+		case <-w.stopChan:
+			return
+		}
+	}
+}
+
+// reloadConfig reloads the config and calls the callback
+func (w *Watcher) reloadConfig() {
+	// Add a small delay to avoid multiple reloads for rapid file changes
+	// This prevents issues with editors that write multiple times
+	time.Sleep(100 * time.Millisecond)
+
+	cfg, err := Load(w.configPath)
+	if err != nil {
+		// In a real application, you might want to log this
+		return
+	}
+
+	// Call the callback with the new config
+	if w.callback != nil {
+		w.callback(cfg)
+	}
 }

@@ -55,8 +55,8 @@ func (inj *Injector) injectViaSmartClipboardWtype(text string) error {
 	// Wait for clipboard to settle
 	time.Sleep(120 * time.Millisecond)
 
-	// Paste with wtype using Ctrl+Shift+V (safer, doesn't conflict with system bindings)
-	pasteCmd := exec.Command("wtype", "-M", "ctrl", "-M", "shift", "v", "-m", "ctrl", "-m", "shift")
+	// Paste with wtype using Shift+Insert (safer, doesn't conflict with system bindings)
+	pasteCmd := exec.Command("wtype", "-M", "shift", "-k", "Insert", "-m", "shift")
 	if err := pasteCmd.Run(); err != nil {
 		return fmt.Errorf("wtype paste failed: %w", err)
 	}

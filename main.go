@@ -21,6 +21,7 @@ import (
 
 type App struct {
 	cfg         *config.Config
+	cfgWatcher  *config.Watcher
 	ipcServer   *ipc.Server
 	recorder    *audio.Recorder
 	loopbackRec *audio.LoopbackRecorder
@@ -250,6 +251,11 @@ func runDaemon() {
 	// Create application
 	app := &App{
 		cfg: cfg,
+	}
+
+	// Initialize config watcher
+	if err := app.initConfigWatcher(cfgPath); err != nil {
+		log.Printf("Failed to initialize config watcher: %v", err)
 	}
 
 	// Initialize components
@@ -658,6 +664,9 @@ func (app *App) setModel(modelName string) error {
 }
 
 func (app *App) cleanup() {
+	if app.cfgWatcher != nil {
+		app.cfgWatcher.Stop()
+	}
 	if app.ipcServer != nil {
 		app.ipcServer.Stop()
 	}
@@ -674,4 +683,108 @@ func (app *App) cleanup() {
 		app.transcriber.Close()
 	}
 	fmt.Println("✅ Cleanup completed")
+}
+
+func (app *App) initConfigWatcher(configPath string) error {
+	watcher, err := config.NewWatcher(configPath, app.onConfigChange)
+	if err != nil {
+		return err
+	}
+
+	app.cfgWatcher = watcher
+	return watcher.Start()
+}
+
+func (app *App) onConfigChange(newCfg *config.Config) {
+	fmt.Println("🔄 Config file changed, reloading...")
+
+	// Update the config
+	app.cfg = newCfg
+
+	// Reinitialize components that depend on config
+	app.reinitializeComponents()
+
+	fmt.Println("✅ Config reloaded successfully")
+}
+
+func (app *App) reinitializeComponents() {
+	// Close existing components
+	if app.recorder != nil {
+		app.recorder.Close()
+	}
+	if app.loopbackRec != nil {
+		app.loopbackRec.Close()
+	}
+	if app.player != nil {
+		app.player.Close()
+	}
+	if app.transcriber != nil {
+		app.transcriber.Close()
+	}
+
+	// Reinitialize audio recorder
+	var err error
+	app.recorder, err = audio.NewRecorder(app.cfg.SampleRate, app.cfg.AudioDevice)
+	if err != nil {
+		fmt.Printf("❌ Failed to reinitialize audio recorder: %v\n", err)
+		return
+	}
+
+	// Reinitialize AEC and VAD if enabled
+	app.aecProc = nil
+	app.vadProc = nil
+	app.loopbackRec = nil
+
+	if app.cfg.EchoCancellation {
+		app.loopbackRec, err = audio.NewLoopbackRecorder(app.cfg.SampleRate)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to reinitialize loopback recorder: %v\n", err)
+		} else {
+			aecConfig := audio.AECConfig{
+				FilterLength:    app.cfg.AECFilterLength,
+				StepSize:        app.cfg.AECStepSize,
+				LeakageFactor:   0.999,
+				EchoSuppression: app.cfg.AECEchoSuppression,
+			}
+			app.aecProc = audio.NewAECProcessor(aecConfig)
+			fmt.Println("✅ Echo cancellation re-enabled")
+		}
+	}
+
+	if app.cfg.VoiceActivityDetection {
+		vadConfig := audio.VADConfig{
+			FrameSize:       512,
+			Overlap:         256,
+			EnergyThreshold: app.cfg.VADEnergyThreshold,
+			ZcrThreshold:    0.1,
+			VoiceThreshold:  app.cfg.VADVoiceThreshold,
+		}
+		app.vadProc = audio.NewVADProcessor(vadConfig)
+		fmt.Println("✅ Voice activity detection re-enabled")
+	}
+
+	// Reinitialize audio player
+	app.player, err = audio.NewPlayer(audio.PlayerConfig{
+		AudioFeedback:    app.cfg.AudioFeedback,
+		StartSoundVolume: app.cfg.StartSoundVolume,
+		StopSoundVolume:  app.cfg.StopSoundVolume,
+		StartSoundPath:   app.cfg.StartSoundPath,
+		StopSoundPath:    app.cfg.StopSoundPath,
+	})
+	if err != nil {
+		fmt.Printf("❌ Failed to reinitialize audio player: %v\n", err)
+		return
+	}
+
+	// Reinitialize whisper transcriber
+	modelPath := filepath.Join(app.cfg.WhisperModelDir, fmt.Sprintf("ggml-%s.bin", app.cfg.Model))
+	app.transcriber, err = whisper.New(modelPath, app.cfg.Threads, app.cfg.WhisperPrompt, app.cfg.AllowedLanguages)
+	if err != nil {
+		fmt.Printf("❌ Failed to reinitialize whisper: %v\n", err)
+		return
+	}
+
+	// Reinitialize command executor
+	app.cmdExecutor = command.NewExecutor(app.cfg.CommandMode, app.cfg.Commands)
+	fmt.Println(app.cmdExecutor.GetStatus())
 }
