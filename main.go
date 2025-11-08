@@ -524,11 +524,13 @@ func (app *App) processAudio(samples []float32, loopbackSamples []float32) {
 		}
 	}
 
-	// Apply VAD if available
+	// Apply VAD if available (but don't block transcription)
 	if app.vadProc != nil {
 		voiceSegments := app.vadProc.GetVoiceSegments(processedSamples)
 		if len(voiceSegments) == 0 {
-			return
+			fmt.Println("⚠️  VAD: No voice segments detected, transcribing full audio anyway")
+		} else {
+			fmt.Printf("✅ VAD: Detected %d voice segment(s)\n", len(voiceSegments))
 		}
 	}
 

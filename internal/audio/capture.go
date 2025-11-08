@@ -206,18 +206,63 @@ func (lr *LoopbackRecorder) Start() error {
 		return fmt.Errorf("failed to list devices: %w", err)
 	}
 
+	fmt.Println("[audio] Available capture devices for loopback:")
+	for i, device := range devices {
+		fmt.Printf("  [%d] %s\n", i, device.Name())
+	}
+
 	var speakerMonitorDevice *malgo.DeviceInfo
-	for _, dev := range devices {
-		devNameLower := strings.ToLower(dev.Name())
-		if strings.Contains(devNameLower, "speaker") && strings.Contains(devNameLower, "monitor") {
-			speakerMonitorDevice = &dev
+
+	// Priority order for loopback devices
+	devicePriorities := []string{
+		"speaker", // Prefer speaker monitor
+		"hdmi",    // Then HDMI monitor
+		"output",  // Then any output monitor
+	}
+
+	for _, priority := range devicePriorities {
+		for _, dev := range devices {
+			devNameLower := strings.ToLower(dev.Name())
+			// Look for monitor devices (system audio capture)
+			if strings.Contains(devNameLower, "monitor") &&
+				strings.Contains(devNameLower, priority) {
+				speakerMonitorDevice = &dev
+				break
+			}
+		}
+		if speakerMonitorDevice != nil {
 			break
 		}
 	}
 
-	if speakerMonitorDevice != nil {
-		deviceConfig.Capture.DeviceID = speakerMonitorDevice.ID.Pointer()
-	} else {
+	// If still no device found, try any monitor device
+	if speakerMonitorDevice == nil {
+		for _, dev := range devices {
+			devNameLower := strings.ToLower(dev.Name())
+			if strings.Contains(devNameLower, "monitor") {
+				speakerMonitorDevice = &dev
+				break
+			}
+		}
+	}
+
+	// Collect all potential monitor devices (exclude microphones)
+	var monitorDevices []*malgo.DeviceInfo
+	for _, dev := range devices {
+		devNameLower := strings.ToLower(dev.Name())
+		// Only include devices that are monitors AND not microphones
+		if strings.Contains(devNameLower, "monitor") &&
+			!strings.Contains(devNameLower, "microphone") {
+			monitorDevices = append(monitorDevices, &dev)
+		}
+	}
+
+	if len(monitorDevices) == 0 {
+		fmt.Println("[ERROR] No monitor devices found for echo cancellation")
+		fmt.Println("[ERROR] Available devices:")
+		for i, dev := range devices {
+			fmt.Printf("  [%d] %s\n", i, dev.Name())
+		}
 		return fmt.Errorf("no speaker monitor device found")
 	}
 
@@ -244,17 +289,38 @@ func (lr *LoopbackRecorder) Start() error {
 		lr.samples = append(lr.samples, samples...)
 	}
 
-	var initErr error
-	lr.device, initErr = malgo.InitDevice(lr.ctx.Context, deviceConfig, malgo.DeviceCallbacks{
-		Data: onRecvFrames,
-	})
-	if initErr != nil {
-		return fmt.Errorf("failed to initialize loopback device: %w", initErr)
+	// Try each monitor device until one works
+	var lastErr error
+	for i, monitorDevice := range monitorDevices {
+		deviceConfig.Capture.DeviceID = monitorDevice.ID.Pointer()
+		fmt.Printf("🔄 Trying loopback device [%d]: %s\n", i, monitorDevice.Name())
+
+		var initErr error
+		lr.device, initErr = malgo.InitDevice(lr.ctx.Context, deviceConfig, malgo.DeviceCallbacks{
+			Data: onRecvFrames,
+		})
+
+		if initErr != nil {
+			fmt.Printf("❌ Failed to initialize device [%d]: %v\n", i, initErr)
+			lastErr = initErr
+			continue
+		}
+
+		if startErr := lr.device.Start(); startErr != nil {
+			fmt.Printf("❌ Failed to start device [%d]: %v\n", i, startErr)
+			lr.device.Uninit()
+			lr.device = nil
+			lastErr = startErr
+			continue
+		}
+
+		fmt.Printf("✅ Successfully using loopback device: %s\n", monitorDevice.Name())
+		return nil
 	}
 
-	if startErr := lr.device.Start(); startErr != nil {
-		return fmt.Errorf("failed to start loopback device: %w", startErr)
-	}
+	// All devices failed
+	fmt.Println("[ERROR] All monitor devices failed to initialize")
+	return fmt.Errorf("failed to initialize any loopback device, last error: %w", lastErr)
 
 	lr.recording = true
 	return nil
