@@ -253,7 +253,8 @@ func (lr *LoopbackRecorder) Start() error {
 		// Only include devices that are monitors AND not microphones
 		if strings.Contains(devNameLower, "monitor") &&
 			!strings.Contains(devNameLower, "microphone") {
-			monitorDevices = append(monitorDevices, &dev)
+			devCopy := dev // Fix: create a copy to avoid pointer aliasing
+			monitorDevices = append(monitorDevices, &devCopy)
 		}
 	}
 
@@ -315,15 +316,13 @@ func (lr *LoopbackRecorder) Start() error {
 		}
 
 		fmt.Printf("✅ Successfully using loopback device: %s\n", monitorDevice.Name())
+		lr.recording = true
 		return nil
 	}
 
 	// All devices failed
 	fmt.Println("[ERROR] All monitor devices failed to initialize")
 	return fmt.Errorf("failed to initialize any loopback device, last error: %w", lastErr)
-
-	lr.recording = true
-	return nil
 }
 
 // Stop stops recording and returns the captured audio

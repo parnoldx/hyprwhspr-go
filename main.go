@@ -508,9 +508,13 @@ func (app *App) processAudio(samples []float32, loopbackSamples []float32) {
 		app.isProcessing = false
 	}()
 
+	// Debug: Print sample counts
+	fmt.Printf("🔍 DEBUG: Mic samples: %d, Loopback samples: %d\n", len(samples), len(loopbackSamples))
+
 	// Apply AEC if available
 	processedSamples := samples
 	if app.aecProc != nil && len(loopbackSamples) > 0 {
+		fmt.Println("🔊 AEC: Processing with echo cancellation...")
 		// Ensure both samples have same length
 		minLen := len(samples)
 		if len(loopbackSamples) < minLen {
@@ -521,21 +525,77 @@ func (app *App) processAudio(samples []float32, loopbackSamples []float32) {
 			micSamples := samples[:minLen]
 			farEndSamples := loopbackSamples[:minLen]
 			processedSamples = app.aecProc.ProcessFrame(micSamples, farEndSamples)
+			fmt.Printf("✅ AEC: Processed %d samples\n", minLen)
 		}
+	} else if app.aecProc == nil {
+		fmt.Println("⚠️  AEC: Disabled (aecProc is nil)")
+	} else if len(loopbackSamples) == 0 {
+		fmt.Println("⚠️  AEC: No loopback samples captured!")
 	}
 
-	// Apply VAD if available (but don't block transcription)
+	// Apply VAD if available
+	samplesToTranscribe := processedSamples
 	if app.vadProc != nil {
 		voiceSegments := app.vadProc.GetVoiceSegments(processedSamples)
 		if len(voiceSegments) == 0 {
-			fmt.Println("⚠️  VAD: No voice segments detected, transcribing full audio anyway")
-		} else {
-			fmt.Printf("✅ VAD: Detected %d voice segment(s)\n", len(voiceSegments))
+			fmt.Println("⚠️  VAD: No voice detected - skipping transcription (only background/output audio)")
+			return
 		}
+		fmt.Printf("✅ VAD: Detected %d voice segment(s)\n", len(voiceSegments))
+
+		// Instead of extracting segments, mute non-voice parts in-place
+		// This preserves timing and structure for Whisper
+		sampleRate := float64(app.cfg.SampleRate)
+		paddingMs := 200.0 // Add 200ms padding before/after each segment
+		paddingSamples := int(paddingMs * sampleRate / 1000.0)
+
+		// Create a copy to modify
+		mutedSamples := make([]float32, len(processedSamples))
+		copy(mutedSamples, processedSamples)
+
+		// Create a mask: true = keep audio, false = mute
+		keepMask := make([]bool, len(processedSamples))
+
+		// Mark voice segments (with padding) to keep
+		for i, seg := range voiceSegments {
+			startSample := int(seg.Start*sampleRate/1000.0) - paddingSamples
+			endSample := int(seg.End*sampleRate/1000.0) + paddingSamples
+
+			// Bounds check
+			if startSample < 0 {
+				startSample = 0
+			}
+			if endSample > len(processedSamples) {
+				endSample = len(processedSamples)
+			}
+
+			// Mark this range to keep
+			for j := startSample; j < endSample; j++ {
+				keepMask[j] = true
+			}
+
+			fmt.Printf("   Segment %d: %.1fms-%.1fms (%.1fms duration, keeping with %.0fms padding)\n",
+				i+1, seg.Start, seg.End, seg.Duration, paddingMs*2)
+		}
+
+		// Mute (zero out) all non-voice parts
+		mutedCount := 0
+		for i := range mutedSamples {
+			if !keepMask[i] {
+				mutedSamples[i] = 0.0
+				mutedCount++
+			}
+		}
+
+		keptSamples := len(mutedSamples) - mutedCount
+		fmt.Printf("📊 VAD: Keeping %d samples, muted %d samples (%.1f%% voice)\n",
+			keptSamples, mutedCount, float64(keptSamples)/float64(len(mutedSamples))*100)
+
+		samplesToTranscribe = mutedSamples
 	}
 
 	// Transcribe
-	text, err := app.transcriber.Transcribe(processedSamples)
+	text, err := app.transcriber.Transcribe(samplesToTranscribe)
 	if err != nil {
 		fmt.Printf("❌ Transcription failed: %v\n", err)
 		return
